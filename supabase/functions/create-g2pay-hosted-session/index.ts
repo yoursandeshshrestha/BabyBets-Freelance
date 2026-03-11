@@ -219,11 +219,14 @@ serve(async (req) => {
       apiUrl: G2PAY_DIRECT_API_URL,
     })
 
+    console.log('[create-g2pay-hosted] Request data:', requestData)
+    console.log('[create-g2pay-hosted] Final request with signature:', finalRequest)
+
     // For Hosted Integration, return the payment URL for frontend to redirect to
     // G2Pay's hosted page will display, handle card entry, 3DS, Apple Pay, Google Pay
     const hostedPaymentURL = `${G2PAY_DIRECT_API_URL}?${new URLSearchParams(finalRequest as Record<string, string>).toString()}`
 
-    console.log('[create-g2pay-hosted] Hosted payment URL created')
+    console.log('[create-g2pay-hosted] Hosted payment URL created:', hostedPaymentURL)
 
     // Update transaction log
     if (transactionLog?.id) {

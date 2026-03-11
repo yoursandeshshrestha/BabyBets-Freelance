@@ -506,13 +506,14 @@ function Checkout() {
         throw new Error('No payment URL received from payment gateway')
       }
 
+      // Save order ID to localStorage so we can track it after redirect
+      localStorage.setItem('pendingOrderId', order.id)
+
       // Redirect to G2Pay's hosted payment page
       // User will enter card details on G2Pay's secure page
       // G2Pay handles 3DS, Apple Pay, Google Pay automatically
       console.log('[Checkout] Redirecting to G2Pay hosted payment page')
-
-      // Save order ID to localStorage so we can track it after redirect
-      localStorage.setItem('pendingOrderId', order.id)
+      console.log('[Checkout] Payment URL:', paymentResult.hostedPaymentURL)
 
       // Redirect to G2Pay's hosted payment page
       window.location.href = paymentResult.hostedPaymentURL
