@@ -17,6 +17,18 @@ export interface CardDetails {
   cardholderName: string
 }
 
+// Browser info for 3DS v2
+export interface BrowserInfo {
+  deviceChannel: string
+  deviceIdentity: string
+  deviceTimeZone: string
+  deviceCapabilities: string
+  deviceScreenResolution: string
+  deviceAcceptContent?: string
+  deviceAcceptEncoding?: string
+  deviceAcceptLanguage?: string
+}
+
 // Hosted payment session response
 interface HostedSessionResponse {
   success: boolean
@@ -24,7 +36,33 @@ interface HostedSessionResponse {
   paymentFormData?: Record<string, string>
   orderRef?: string
   transactionUnique?: string
+  requires3DS?: boolean
+  threeDSURL?: string
+  threeDSRequest?: Record<string, string>
+  threeDSRef?: string
+  threeDSVersion?: string
   error?: string
+}
+
+// Collect browser information for 3DS v2
+export const collectBrowserInfo = (): BrowserInfo => {
+  const screenWidth = window.screen ? window.screen.width : 0
+  const screenHeight = window.screen ? window.screen.height : 0
+  const screenDepth = window.screen ? window.screen.colorDepth : 0
+  const timezone = new Date().getTimezoneOffset()
+  const language = window.navigator.language || (window.navigator as { browserLanguage?: string }).browserLanguage || ''
+  const javaEnabled = navigator.javaEnabled ? navigator.javaEnabled() : false
+
+  return {
+    deviceChannel: 'browser',
+    deviceIdentity: window.navigator.userAgent || '',
+    deviceTimeZone: timezone.toString(),
+    deviceCapabilities: `javascript${javaEnabled ? ',java' : ''}`,
+    deviceScreenResolution: `${screenWidth}x${screenHeight}x${screenDepth}`,
+    deviceAcceptContent: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    deviceAcceptEncoding: 'gzip, deflate, br',
+    deviceAcceptLanguage: language,
+  }
 }
 
 // Create a hosted payment session via Edge Function
@@ -33,7 +71,8 @@ export const createHostedPaymentSession = async (
   orderRef: string,
   customerEmail?: string,
   customerPhone?: string,
-  cardDetails?: CardDetails
+  cardDetails?: CardDetails,
+  browserInfo?: BrowserInfo
 ): Promise<HostedSessionResponse> => {
   // Get current session
   const {
@@ -104,6 +143,7 @@ export const createHostedPaymentSession = async (
       customerEmail,
       customerPhone,
       cardDetails,
+      browserInfo,
     },
   })
 
@@ -150,6 +190,54 @@ export const createHostedPaymentSession = async (
   if (data && !data.success) {
     console.error('[G2Pay Hosted] Payment failed:', data)
     throw new Error(data.error || data.rawMessage || 'Payment failed')
+  }
+
+  return data
+}
+
+// Continue 3DS transaction after ACS challenge
+export const continue3DSTransaction = async (
+  threeDSRef: string,
+  threeDSResponse: Record<string, string>
+): Promise<HostedSessionResponse> => {
+  // Get current session
+  const {
+    data: { session: currentSession },
+  } = await supabase.auth.getSession()
+
+  if (!currentSession?.access_token) {
+    throw new Error('Not authenticated. Please log in.')
+  }
+
+  // Create a new Supabase client instance with the JWT token
+  const supabaseWithAuth = createClient(
+    import.meta.env.VITE_SUPABASE_URL,
+    import.meta.env.VITE_SUPABASE_ANON_KEY,
+    {
+      global: {
+        headers: {
+          Authorization: `Bearer ${currentSession.access_token}`,
+        },
+      },
+    }
+  )
+
+  // Call Edge Function to continue 3DS
+  const { data, error } = await supabaseWithAuth.functions.invoke('create-g2pay-hosted-session', {
+    body: {
+      threeDSRef,
+      threeDSResponse,
+    },
+  })
+
+  if (error) {
+    console.error('[G2Pay 3DS Continuation] Edge function error:', error)
+    throw new Error(error.message || 'Failed to continue 3DS transaction')
+  }
+
+  if (data && !data.success) {
+    console.error('[G2Pay 3DS Continuation] Payment failed:', data)
+    throw new Error(data.error || 'Payment failed after 3DS')
   }
 
   return data

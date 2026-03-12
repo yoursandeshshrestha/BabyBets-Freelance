@@ -105,12 +105,15 @@ serve(async (req) => {
       }
     )
 
-    // Get request body (includes card details for Direct API)
+    // Get request body (includes card details and browser info for Direct API with 3DS)
     const {
       orderRef,
       customerEmail,
       customerPhone,
       cardDetails,
+      browserInfo,
+      threeDSRef,
+      threeDSResponse,
     } = await req.json()
 
     if (!orderRef) {
@@ -184,6 +187,71 @@ serve(async (req) => {
       console.error('[create-g2pay-hosted-session] Failed to create transaction log:', logError)
     }
 
+    // Check if this is a 3DS continuation request
+    if (threeDSRef && threeDSResponse) {
+      // This is a 3DS continuation - we already have the 3DS response from the ACS
+      const continuationData: Record<string, string | number> = {
+        threeDSRef,
+        threeDSResponse,
+      }
+
+      console.log('[create-g2pay-direct] Processing 3DS continuation')
+
+      const signature = await createSignature(continuationData, G2PAY_SIGNATURE_KEY)
+      const finalRequest = {
+        ...continuationData,
+        signature,
+      }
+
+      // Make the continuation request
+      const g2payResponse = await fetch(G2PAY_DIRECT_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(finalRequest as Record<string, string>).toString(),
+      })
+
+      const responseText = await g2payResponse.text()
+      console.log('[create-g2pay-direct] 3DS continuation response:', responseText)
+
+      const responseParams = new URLSearchParams(responseText)
+      const responseData: Record<string, string> = {}
+      responseParams.forEach((value, key) => {
+        responseData[key] = value
+      })
+
+      // Handle the response (success or failure)
+      if (responseData.responseCode === '0') {
+        console.log('[create-g2pay-direct] ✅ Payment successful after 3DS')
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            transactionID: responseData.transactionID,
+            message: responseData.responseMessage,
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      } else {
+        console.error('[create-g2pay-direct] Payment failed after 3DS:', responseData.responseMessage)
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: responseData.responseMessage || 'Payment failed',
+            responseCode: responseData.responseCode,
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        )
+      }
+    }
+
     // Validate card details are provided
     if (!cardDetails || !cardDetails.cardNumber || !cardDetails.expiryMonth || !cardDetails.expiryYear || !cardDetails.cvv) {
       return new Response(
@@ -195,7 +263,12 @@ serve(async (req) => {
       )
     }
 
-    // Prepare request data for G2Pay Direct API (no 3DS for now)
+    // Get client IP address for 3DS
+    const deviceIpAddress = req.headers.get('x-forwarded-for')?.split(',')[0] ||
+                           req.headers.get('x-real-ip') ||
+                           'unknown'
+
+    // Prepare request data for G2Pay Direct API with 3DS support
     const requestData: Record<string, string | number> = {
       merchantID: G2PAY_MERCHANT_ID,
       action: 'SALE',
@@ -212,6 +285,10 @@ serve(async (req) => {
       cardExpiryYear: cardDetails.expiryYear,
       cardCVV: cardDetails.cvv,
 
+      // 3DS required fields
+      deviceIpAddress,
+      threeDSRedirectURL: `${SITE_URL}/payment-3ds?orderRef=${orderRef}`,
+
       // Webhook callback URL for backend payment confirmation
       callbackURL: `${SUPABASE_URL}/functions/v1/g2pay-webhook`,
 
@@ -219,6 +296,9 @@ serve(async (req) => {
       ...(customerEmail && { customerEmail }),
       ...(cleanedPhone && { customerPhone: cleanedPhone }),
       ...(cardDetails.cardholderName && { customerName: cardDetails.cardholderName }),
+
+      // Browser info for 3DS v2 (if provided)
+      ...(browserInfo && browserInfo),
     }
 
     // Generate signature
@@ -273,6 +353,25 @@ serve(async (req) => {
       responseMessage: responseData.responseMessage,
       transactionID: responseData.transactionID,
     })
+
+    // Check if 3DS challenge is required (responseCode 65802)
+    if (responseData.responseCode === '65802') {
+      console.log('[create-g2pay-direct] 3DS challenge required')
+
+      return new Response(
+        JSON.stringify({
+          success: false,
+          requires3DS: true,
+          threeDSURL: responseData.threeDSURL,
+          threeDSRequest: JSON.parse(responseData.threeDSRequest || '{}'),
+          threeDSRef: responseData.threeDSRef,
+          threeDSVersion: responseData.threeDSVersion,
+        }),
+        {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      )
+    }
 
     // Check payment status (responseCode '0' = success)
     if (responseData.responseCode === '0') {

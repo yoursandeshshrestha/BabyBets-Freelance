@@ -5,7 +5,7 @@ import Footer from '@/components/common/Footer'
 import { useCartStore } from '@/store/cartStore'
 import { useAuthStore } from '@/store/authStore'
 import { useWallet } from '@/hooks/useWallet'
-import { createHostedPaymentSession } from '@/lib/g2pay'
+import { createHostedPaymentSession, collectBrowserInfo } from '@/lib/g2pay'
 import { supabase } from '@/lib/supabase'
 import { getReferral, clearReferral, setReferral } from '@/lib/referralTracking'
 import { showErrorToast, showWarningToast } from '@/lib/toast'
@@ -507,7 +507,10 @@ function Checkout() {
       // Parse card expiry
       const [expiryMonth, expiryYear] = expiryDate.split('/')
 
-      // Create Direct API payment with card details
+      // Collect browser info for 3DS v2
+      const browserInfo = collectBrowserInfo()
+
+      // Create Direct API payment with card details and browser info
       const paymentResult = await createHostedPaymentSession(
         order.id,
         session.user.email,
@@ -518,8 +521,33 @@ function Checkout() {
           expiryYear: expiryYear.trim(),
           cvv: cvv,
           cardholderName: cardholderName,
-        }
+        },
+        browserInfo
       )
+
+      // Check if 3DS challenge is required
+      if (paymentResult.requires3DS) {
+        console.log('[Checkout] 3DS challenge required')
+
+        // Store order ID and threeDSRef for later use
+        localStorage.setItem('pendingOrderId', order.id)
+        localStorage.setItem('threeDSRef', paymentResult.threeDSRef || '')
+
+        // Redirect to 3DS challenge page with the ACS URL
+        const params = new URLSearchParams({
+          orderRef: order.id,
+          threeDSURL: paymentResult.threeDSURL || '',
+          threeDSRef: paymentResult.threeDSRef || '',
+        })
+
+        // Store 3DS request data
+        if (paymentResult.threeDSRequest) {
+          localStorage.setItem('threeDSRequest', JSON.stringify(paymentResult.threeDSRequest))
+        }
+
+        navigate(`/payment-3ds?${params.toString()}`)
+        return
+      }
 
       if (!paymentResult.success) {
         throw new Error(paymentResult.error || 'Failed to create payment session')
