@@ -19,11 +19,21 @@ function Payment3DS() {
   const isAcsCallback = searchParams.get('acs') === '1'
 
   useEffect(() => {
+    console.log('[Payment3DS] useEffect triggered:', {
+      isAcsCallback,
+      threeDSAcsResponse,
+      orderRef,
+      isInIframe: window.parent !== window
+    })
+
     // If this is an ACS callback from iframe (method completed)
     if (isAcsCallback && threeDSAcsResponse === 'method') {
-      console.log('[Payment3DS] Method callback detected in iframe - notifying parent')
+      console.log('[Payment3DS] 📨 Method callback detected in iframe - notifying parent')
       if (window.parent !== window && orderRef) {
+        console.log('[Payment3DS] 📤 Sending postMessage to parent:', { type: 'ACS_METHOD_COMPLETE', orderRef })
         window.parent.postMessage({ type: 'ACS_METHOD_COMPLETE', orderRef }, '*')
+      } else {
+        console.log('[Payment3DS] ⚠️ Not in iframe or missing orderRef')
       }
       return
     }
@@ -76,12 +86,20 @@ function Payment3DS() {
 
         // Listen for message from iframe when method completes
         const handleMessage = (event: MessageEvent) => {
+          console.log('[Payment3DS] Received message:', event.data)
           if (event.data?.type === 'ACS_METHOD_COMPLETE' && event.data?.orderRef === orderRef) {
-            console.log('[Payment3DS] Received method completion from iframe - continuing transaction')
+            console.log('[Payment3DS] ✅ Method completion message matches - continuing transaction')
             if (threeDSRef) {
               // Continue transaction with method indicator
               processACSResponse('method', threeDSRef)
             }
+          } else {
+            console.log('[Payment3DS] ❌ Message does not match criteria:', {
+              type: event.data?.type,
+              expectedType: 'ACS_METHOD_COMPLETE',
+              receivedOrderRef: event.data?.orderRef,
+              expectedOrderRef: orderRef,
+            })
           }
         }
 
@@ -89,7 +107,7 @@ function Payment3DS() {
 
         // Fallback: if no message received after 10 seconds, continue anyway
         const fallbackTimeout = setTimeout(() => {
-          console.log('[Payment3DS] Timeout - no callback from ACS, continuing anyway...')
+          console.log('[Payment3DS] ⏱️ Timeout reached (10s) - no callback from ACS, continuing anyway...')
           if (threeDSRef) {
             processACSResponse('method', threeDSRef)
           }
@@ -145,7 +163,11 @@ function Payment3DS() {
         }
       }
 
-      console.log('[Payment3DS] Parsed response data:', Object.keys(responseData).length > 0 ? responseData : 'empty')
+      console.log('[Payment3DS] Parsed response data:', {
+        keys: Object.keys(responseData),
+        data: responseData,
+        hasData: Object.keys(responseData).length > 0
+      })
 
       const result = await continue3DSTransaction(orderRef, ref, responseData)
 
