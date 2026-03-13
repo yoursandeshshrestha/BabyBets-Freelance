@@ -6,18 +6,35 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform',
 }
 
+// PHP-compatible URL encoding to match http_build_query()
+function phpRawUrlEncode(str: string): string {
+  // PHP's rawurlencode() encodes according to RFC 3986
+  // It encodes everything except: A-Z a-z 0-9 - _ . ~
+  // Then we convert spaces to + for application/x-www-form-urlencoded
+  return encodeURIComponent(str)
+    .replace(/!/g, '%21')
+    .replace(/'/g, '%27')
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\*/g, '%2A')
+    .replace(/%20/g, '+') // Spaces as + for application/x-www-form-urlencoded
+}
+
 // Generate signature using G2Pay's method (SHA-512)
 async function createSignature(data: Record<string, string | number>, signatureKey: string): Promise<string> {
   // Sort keys alphabetically (same as PHP's ksort)
   const keys = Object.keys(data).sort()
 
-  // Create URL encoded signature string using sorted keys (same as PHP's http_build_query)
-  const params = new URLSearchParams()
+  // Build query string to match PHP's http_build_query() encoding EXACTLY
+  const pairs: string[] = []
   keys.forEach(key => {
-    params.append(key, String(data[key]))
+    const value = String(data[key])
+    const encodedKey = phpRawUrlEncode(key)
+    const encodedValue = phpRawUrlEncode(value)
+    pairs.push(`${encodedKey}=${encodedValue}`)
   })
 
-  let signatureString = params.toString()
+  let signatureString = pairs.join('&')
 
   // Normalise all line endings (CRNL|NLCR|NL|CR) to just NL (%0A)
   signatureString = signatureString
@@ -30,6 +47,11 @@ async function createSignature(data: Record<string, string | number>, signatureK
   console.log('[createSignature] Query string length:', signatureString.length)
 
   const messageToHash = signatureString + signatureKey
+
+  // Log the complete string being hashed (for G2Pay support verification)
+  console.log('[createSignature] String to hash (first 250 chars):', messageToHash.substring(0, 250))
+  console.log('[createSignature] String to hash (last 50 chars):', messageToHash.substring(messageToHash.length - 50))
+  console.log('[createSignature] Total length with key:', messageToHash.length)
 
   const msgBuffer = new TextEncoder().encode(messageToHash)
   const hashBuffer = await crypto.subtle.digest('SHA-512', msgBuffer)
@@ -272,6 +294,7 @@ serve(async (req) => {
                            'unknown'
 
     // Prepare request data for G2Pay Direct API with 3DS support
+    // Following PHP example exactly - NO transactionUnique, NO callbackURL
     const requestData: Record<string, string | number> = {
       merchantID: G2PAY_MERCHANT_ID,
       action: 'SALE',
@@ -280,7 +303,7 @@ serve(async (req) => {
       currencyCode: 826, // GBP
       amount: order.total_pence,
       orderRef,
-      transactionUnique,
+      // NOTE: transactionUnique removed - not in PHP example, tracked in our DB instead
 
       // Card details
       cardNumber: cardDetails.cardNumber,
@@ -292,8 +315,7 @@ serve(async (req) => {
       deviceIpAddress,
       threeDSRedirectURL: `${SITE_URL}/payment-3ds?orderRef=${orderRef}`,
 
-      // Webhook callback URL for backend payment confirmation
-      callbackURL: `${SUPABASE_URL}/functions/v1/g2pay-webhook`,
+      // NOTE: callbackURL removed - not in PHP example, may be pre-configured in G2Pay portal
 
       // Optional customer details
       ...(customerEmail && { customerEmail }),
@@ -307,7 +329,7 @@ serve(async (req) => {
     console.log('[create-g2pay-direct] Processing Direct API payment:', {
       orderRef,
       amount: order.total_pence,
-      transactionUnique,
+      transactionUnique, // Tracked in DB only, not sent to G2Pay
       apiUrl: G2PAY_DIRECT_API_URL,
     })
 
@@ -322,13 +344,11 @@ serve(async (req) => {
     console.log('[create-g2pay-direct] Sorted keys:', sortedKeys.join(', '))
     console.log('[create-g2pay-direct] Signature key length:', G2PAY_SIGNATURE_KEY?.length, 'Expected: 13')
 
-    // For Direct Integration with 3DS, ONLY exclude callbackURL from signature
-    // Card details MUST be included in signature (as per PHP example)
-    // callbackURL is NOT in PHP example - should be excluded or pre-configured in portal
+    // For Direct Integration with 3DS, sign ALL fields in the request
+    // We removed transactionUnique and callbackURL entirely to match PHP example
     const signatureData = { ...requestData }
-    delete signatureData.callbackURL  // Callback URL is sent but not signed
 
-    console.log('[create-g2pay-direct] Signature fields (excluding only callbackURL):', Object.keys(signatureData).sort().join(', '))
+    console.log('[create-g2pay-direct] Signature fields (all request fields):', Object.keys(signatureData).sort().join(', '))
 
     // Generate signature
     const signature = await createSignature(signatureData, G2PAY_SIGNATURE_KEY)
@@ -360,9 +380,24 @@ serve(async (req) => {
 
     const responseParams = new URLSearchParams(responseText)
     const responseData: Record<string, string> = {}
+    const threeDSRequest: Record<string, string> = {}
+    const threeDSDetails: Record<string, string> = {}
 
     responseParams.forEach((value, key) => {
-      responseData[key] = value
+      // Handle nested parameters like threeDSRequest[threeDSMethodData]
+      if (key.startsWith('threeDSRequest[')) {
+        const subKey = key.match(/\[([^\]]+)\]/)?.[1]
+        if (subKey) {
+          threeDSRequest[subKey] = value
+        }
+      } else if (key.startsWith('threeDSDetails[')) {
+        const subKey = key.match(/\[([^\]]+)\]/)?.[1]
+        if (subKey) {
+          threeDSDetails[subKey] = value
+        }
+      } else {
+        responseData[key] = value
+      }
     })
 
     console.log('[create-g2pay-direct] Parsed response:', {
@@ -374,15 +409,20 @@ serve(async (req) => {
     // Check if 3DS challenge is required (responseCode 65802)
     if (responseData.responseCode === '65802') {
       console.log('[create-g2pay-direct] 3DS challenge required')
+      console.log('[create-g2pay-direct] 3DS URL:', responseData.threeDSURL)
+      console.log('[create-g2pay-direct] 3DS Request:', threeDSRequest)
 
       return new Response(
         JSON.stringify({
           success: false,
           requires3DS: true,
           threeDSURL: responseData.threeDSURL,
-          threeDSRequest: JSON.parse(responseData.threeDSRequest || '{}'),
+          threeDSRequest: threeDSRequest, // Already an object
+          threeDSDetails: threeDSDetails,
           threeDSRef: responseData.threeDSRef,
           threeDSVersion: responseData.threeDSVersion,
+          orderRef,
+          transactionID: responseData.transactionID,
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },

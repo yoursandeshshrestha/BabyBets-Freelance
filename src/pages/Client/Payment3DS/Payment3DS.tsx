@@ -10,12 +10,24 @@ function Payment3DS() {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showIframe, setShowIframe] = useState(true)
+  const [showContinue, setShowContinue] = useState(false)
 
   const orderRef = searchParams.get('orderRef')
   const threeDSURL = searchParams.get('threeDSURL')
   const threeDSRef = searchParams.get('threeDSRef')
 
+  // Check if this is a callback from ACS (threeDSAcsResponse query param)
+  const threeDSAcsResponse = searchParams.get('threeDSAcsResponse')
+
   useEffect(() => {
+    // If we have the ACS response, process it immediately
+    if (threeDSAcsResponse && threeDSRef) {
+      console.log('[Payment3DS] Processing ACS callback response')
+      processACSResponse(threeDSAcsResponse, threeDSRef)
+      return
+    }
+
     if (!orderRef || !threeDSURL || !threeDSRef) {
       setError('Missing 3DS parameters')
       return
@@ -28,77 +40,94 @@ function Payment3DS() {
       return
     }
 
-    const threeDSRequest = JSON.parse(threeDSRequestStr)
+    try {
+      const threeDSRequest = JSON.parse(threeDSRequestStr)
+      console.log('[Payment3DS] Initiating 3DS challenge with data:', threeDSRequest)
 
-    // Create a hidden form and submit it to the ACS URL in the iframe
-    const form = document.createElement('form')
-    form.method = 'POST'
-    form.action = threeDSURL
-    form.target = 'threeds_acs'
-    form.style.display = 'none'
+      // Create a hidden form and submit it to the ACS URL in the iframe
+      const form = document.createElement('form')
+      form.method = 'POST'
+      form.action = threeDSURL
+      form.target = 'threeds_acs'
+      form.style.display = 'none'
 
-    // Add all fields from threeDSRequest
-    Object.entries(threeDSRequest).forEach(([key, value]) => {
-      const input = document.createElement('input')
-      input.type = 'hidden'
-      input.name = key
-      input.value = String(value)
-      form.appendChild(input)
-    })
+      // Add all fields from threeDSRequest
+      Object.entries(threeDSRequest).forEach(([key, value]) => {
+        const input = document.createElement('input')
+        input.type = 'hidden'
+        input.name = key
+        input.value = String(value)
+        form.appendChild(input)
+      })
 
-    document.body.appendChild(form)
+      document.body.appendChild(form)
 
-    // Submit the form after iframe loads
-    if (iframeRef.current) {
-      iframeRef.current.onload = () => {
+      // Submit the form after a short delay to ensure iframe is ready
+      setTimeout(() => {
+        console.log('[Payment3DS] Submitting 3DS challenge form to ACS')
         form.submit()
-      }
-    }
 
-    // Listen for messages from the iframe (3DS response)
-    const handleMessage = async (event: MessageEvent) => {
-      // Only accept messages from the iframe
-      if (event.origin !== new URL(threeDSURL).origin) {
-        return
-      }
+        // Show continue button after method completes (fingerprinting is quick)
+        setTimeout(() => {
+          console.log('[Payment3DS] Method fingerprinting should be complete')
+          setShowContinue(true)
+        }, 3000)
+      }, 100)
 
-      console.log('[Payment3DS] Received message from ACS:', event.data)
-
-      // The ACS will post back the response
-      if (event.data && typeof event.data === 'object') {
-        setLoading(true)
-
-        try {
-          // Continue the transaction with the 3DS response
-          const result = await continue3DSTransaction(threeDSRef, event.data)
-
-          if (result.success) {
-            // Payment successful
-            localStorage.removeItem('pendingOrderId')
-            localStorage.removeItem('threeDSRef')
-            localStorage.removeItem('threeDSRequest')
-            navigate('/account?tab=tickets&purchase=success')
-          } else {
-            throw new Error(result.error || 'Payment failed after 3DS')
-          }
-        } catch (err) {
-          console.error('[Payment3DS] Error continuing transaction:', err)
-          const errorMessage = err instanceof Error ? err.message : 'Failed to complete payment'
-          setError(errorMessage)
-          showErrorToast(errorMessage)
-        } finally {
-          setLoading(false)
+      return () => {
+        if (document.body.contains(form)) {
+          document.body.removeChild(form)
         }
       }
+    } catch (err) {
+      console.error('[Payment3DS] Error setting up 3DS challenge:', err)
+      setError('Failed to initialize 3DS challenge')
     }
+  }, [orderRef, threeDSURL, threeDSRef, threeDSAcsResponse])
 
-    window.addEventListener('message', handleMessage)
+  const processACSResponse = async (acsResponse: string, ref: string) => {
+    setLoading(true)
+    setShowIframe(false)
 
-    return () => {
-      window.removeEventListener('message', handleMessage)
-      document.body.removeChild(form)
+    try {
+      console.log('[Payment3DS] Continuing transaction with 3DS response')
+
+      // Parse the ACS response
+      const responseData: Record<string, string> = {}
+      if (acsResponse) {
+        // If it's a query string, parse it
+        try {
+          const params = new URLSearchParams(acsResponse)
+          params.forEach((value, key) => {
+            responseData[key] = value
+          })
+        } catch {
+          // If not a query string, just pass it as-is
+          responseData.threeDSResponse = acsResponse
+        }
+      }
+
+      const result = await continue3DSTransaction(ref, responseData)
+
+      if (result.success) {
+        console.log('[Payment3DS] ✅ Payment successful after 3DS')
+        // Payment successful
+        localStorage.removeItem('pendingOrderId')
+        localStorage.removeItem('threeDSRef')
+        localStorage.removeItem('threeDSRequest')
+        navigate('/account?tab=tickets&purchase=success')
+      } else {
+        throw new Error(result.error || 'Payment failed after 3DS authentication')
+      }
+    } catch (err) {
+      console.error('[Payment3DS] Error continuing transaction:', err)
+      const errorMessage = err instanceof Error ? err.message : 'Failed to complete payment'
+      setError(errorMessage)
+      showErrorToast(errorMessage)
+    } finally {
+      setLoading(false)
     }
-  }, [orderRef, threeDSURL, threeDSRef, navigate])
+  }
 
   if (error) {
     return (
@@ -145,14 +174,30 @@ function Payment3DS() {
             )}
 
             {/* 3DS Challenge iframe */}
-            <div className="border rounded-lg overflow-hidden" style={{ height: '450px' }}>
-              <iframe
-                ref={iframeRef}
-                name="threeds_acs"
-                title="3D Secure Authentication"
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
-            </div>
+            {showIframe && (
+              <div className="border rounded-lg overflow-hidden" style={{ height: '450px' }}>
+                <iframe
+                  ref={iframeRef}
+                  name="threeds_acs"
+                  title="3D Secure Authentication"
+                  style={{ width: '100%', height: '100%', border: 'none' }}
+                />
+              </div>
+            )}
+
+            {/* Continue button after method completes */}
+            {showContinue && !loading && threeDSRef && (
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => processACSResponse('', threeDSRef)}
+                  className="px-8 py-3 rounded-lg font-medium cursor-pointer"
+                  style={{ backgroundColor: '#496B71', color: 'white' }}
+                >
+                  Continue Payment
+                </button>
+                <p className="text-sm text-gray-500 mt-2">Click to complete your payment</p>
+              </div>
+            )}
 
             <div className="mt-6 text-center text-sm text-gray-500">
               <p>🔒 This is a secure payment verification process</p>
