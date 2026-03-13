@@ -322,16 +322,13 @@ serve(async (req) => {
     console.log('[create-g2pay-direct] Sorted keys:', sortedKeys.join(', '))
     console.log('[create-g2pay-direct] Signature key length:', G2PAY_SIGNATURE_KEY?.length, 'Expected: 13')
 
-    // For Direct Integration, exclude card fields and callbackURL from signature
-    // Card details and callback URL are sent but not included in signature calculation
+    // For Direct Integration with 3DS, ONLY exclude callbackURL from signature
+    // Card details MUST be included in signature (as per PHP example)
+    // callbackURL is NOT in PHP example - should be excluded or pre-configured in portal
     const signatureData = { ...requestData }
-    delete signatureData.cardNumber
-    delete signatureData.cardExpiryMonth
-    delete signatureData.cardExpiryYear
-    delete signatureData.cardCVV
-    delete signatureData.callbackURL
+    delete signatureData.callbackURL  // Callback URL is sent but not signed
 
-    console.log('[create-g2pay-direct] Signature fields (after excluding card data):', Object.keys(signatureData).sort().join(', '))
+    console.log('[create-g2pay-direct] Signature fields (excluding only callbackURL):', Object.keys(signatureData).sort().join(', '))
 
     // Generate signature
     const signature = await createSignature(signatureData, G2PAY_SIGNATURE_KEY)
