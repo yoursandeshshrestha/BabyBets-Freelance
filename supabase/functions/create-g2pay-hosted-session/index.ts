@@ -216,23 +216,36 @@ serve(async (req) => {
     if (threeDSRef) {
       // This is a 3DS continuation - continuing after method or challenge
       console.log('[create-g2pay-direct] Processing 3DS continuation')
+      console.log('[create-g2pay-direct] threeDSResponse type:', typeof threeDSResponse, 'keys:', threeDSResponse ? Object.keys(threeDSResponse) : 'null')
 
       const continuationData: Record<string, string | number> = {
         threeDSRef,
       }
 
-      // Only include threeDSResponse if it has actual data
-      if (threeDSResponse && Object.keys(threeDSResponse).length > 0) {
-        console.log('[create-g2pay-direct] Including 3DS response data')
-        // If threeDSResponse is an object, flatten it into continuationData
-        Object.entries(threeDSResponse).forEach(([key, value]) => {
-          continuationData[key] = String(value)
-        })
+      // Check if threeDSResponse is provided and has data
+      let hasResponseData = false
+      if (threeDSResponse) {
+        if (typeof threeDSResponse === 'string') {
+          // String response (e.g., "method")
+          continuationData.threeDSResponse = threeDSResponse
+          hasResponseData = true
+        } else if (typeof threeDSResponse === 'object' && Object.keys(threeDSResponse).length > 0) {
+          // Object with POST data from ACS
+          console.log('[create-g2pay-direct] Including ACS POST data')
+          Object.entries(threeDSResponse).forEach(([key, value]) => {
+            continuationData[key] = String(value)
+          })
+          hasResponseData = true
+        }
       }
 
+      console.log('[create-g2pay-direct] Continuation data keys:', Object.keys(continuationData).join(', '))
+
       const signature = await createSignature(continuationData, G2PAY_SIGNATURE_KEY)
-      const finalRequest = {
-        ...continuationData,
+
+      // Build final request
+      const finalRequest: Record<string, string> = {
+        ...continuationData as Record<string, string>,
         signature,
       }
 
@@ -321,7 +334,7 @@ serve(async (req) => {
 
       // 3DS required fields
       deviceIpAddress,
-      threeDSRedirectURL: `${SITE_URL}/payment-3ds?orderRef=${orderRef}`,
+      threeDSRedirectURL: `${SITE_URL}/payment-3ds?orderRef=${orderRef}&acs=1`,
 
       // NOTE: callbackURL removed - not in PHP example, may be pre-configured in G2Pay portal
 

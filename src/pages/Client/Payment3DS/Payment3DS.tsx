@@ -15,14 +15,22 @@ function Payment3DS() {
   const orderRef = searchParams.get('orderRef')
   const threeDSURL = searchParams.get('threeDSURL')
   const threeDSRef = searchParams.get('threeDSRef')
-
-  // Check if this is a callback from ACS (threeDSAcsResponse query param)
   const threeDSAcsResponse = searchParams.get('threeDSAcsResponse')
+  const isAcsCallback = searchParams.get('acs') === '1'
 
   useEffect(() => {
-    // If we have the ACS response, process it immediately
-    if (threeDSAcsResponse && threeDSRef) {
-      console.log('[Payment3DS] Processing ACS callback response')
+    // If this is an ACS callback from iframe (method completed)
+    if (isAcsCallback && threeDSAcsResponse === 'method') {
+      console.log('[Payment3DS] Method callback detected in iframe - notifying parent')
+      if (window.parent !== window && orderRef) {
+        window.parent.postMessage({ type: 'ACS_METHOD_COMPLETE', orderRef }, '*')
+      }
+      return
+    }
+
+    // If this is a direct ACS response in parent window
+    if (threeDSAcsResponse && threeDSRef && !isAcsCallback) {
+      console.log('[Payment3DS] Processing direct ACS response:', threeDSAcsResponse)
       processACSResponse(threeDSAcsResponse, threeDSRef)
       return
     }
@@ -66,14 +74,34 @@ function Payment3DS() {
         console.log('[Payment3DS] Submitting 3DS method form to ACS')
         form.submit()
 
-        // Automatically continue after method completes (fingerprinting is quick)
-        setTimeout(() => {
-          console.log('[Payment3DS] Method fingerprinting should be complete, continuing automatically...')
-          if (threeDSRef) {
-            // Automatically continue the transaction after fingerprinting
-            processACSResponse('', threeDSRef)
+        // Listen for message from iframe when method completes
+        const handleMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'ACS_METHOD_COMPLETE' && event.data?.orderRef === orderRef) {
+            console.log('[Payment3DS] Received method completion from iframe - continuing transaction')
+            if (threeDSRef) {
+              // Continue transaction with method indicator
+              processACSResponse('method', threeDSRef)
+            }
           }
-        }, 3000)
+        }
+
+        window.addEventListener('message', handleMessage)
+
+        // Fallback: if no message received after 10 seconds, continue anyway
+        const fallbackTimeout = setTimeout(() => {
+          console.log('[Payment3DS] Timeout - no callback from ACS, continuing anyway...')
+          if (threeDSRef) {
+            processACSResponse('method', threeDSRef)
+          }
+        }, 10000)
+
+        return () => {
+          window.removeEventListener('message', handleMessage)
+          clearTimeout(fallbackTimeout)
+          if (document.body.contains(form)) {
+            document.body.removeChild(form)
+          }
+        }
       }, 100)
 
       return () => {
@@ -85,7 +113,7 @@ function Payment3DS() {
       console.error('[Payment3DS] Error setting up 3DS challenge:', err)
       setError('Failed to initialize 3DS challenge')
     }
-  }, [orderRef, threeDSURL, threeDSRef, threeDSAcsResponse])
+  }, [orderRef, threeDSURL, threeDSRef, isAcsCallback])
 
   const processACSResponse = async (acsResponse: string, ref: string) => {
     setLoading(true)
