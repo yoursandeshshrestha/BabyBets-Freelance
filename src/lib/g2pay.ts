@@ -169,6 +169,78 @@ export const completeOrder = async (orderId: string): Promise<{ success: boolean
 }
 
 /**
+ * Validate Apple Pay merchant via edge function.
+ */
+export const validateAppleMerchant = async (
+  validationURL: string,
+  displayName: string,
+  domainName: string
+): Promise<{ merchantSession: object }> => {
+  const supabaseWithAuth = await getAuthenticatedClient()
+
+  const { data, error } = await supabaseWithAuth.functions.invoke('validate-apple-pay-merchant', {
+    body: { validationURL, displayName, domainName },
+  })
+
+  if (error) {
+    console.error('[ApplePay] validate-merchant error:', error)
+    throw new Error(error.message || 'Merchant validation failed')
+  }
+
+  if (!data?.success || !data?.merchantSession) {
+    throw new Error('Merchant validation failed')
+  }
+
+  return data
+}
+
+/**
+ * Process Apple Pay payment via edge function.
+ */
+export const processApplePayPayment = async (
+  orderId: string,
+  paymentToken: object,
+  customerEmail?: string,
+  customerPhone?: string
+): Promise<{ success: boolean; transactionID?: string; error?: string }> => {
+  const supabaseWithAuth = await getAuthenticatedClient()
+
+  const { data, error } = await supabaseWithAuth.functions.invoke('process-apple-pay-payment', {
+    body: { orderId, paymentToken, customerEmail, customerPhone },
+  })
+
+  if (error) {
+    console.error('[ApplePay] process-payment error:', error)
+    throw new Error(error.message || 'Apple Pay payment failed')
+  }
+
+  return data
+}
+
+/**
+ * Process Google Pay payment via edge function.
+ */
+export const processGooglePayPayment = async (
+  orderId: string,
+  paymentToken: string,
+  customerEmail?: string,
+  customerPhone?: string
+): Promise<{ success: boolean; transactionID?: string; error?: string }> => {
+  const supabaseWithAuth = await getAuthenticatedClient()
+
+  const { data, error } = await supabaseWithAuth.functions.invoke('process-google-pay-payment', {
+    body: { orderId, paymentToken, customerEmail, customerPhone },
+  })
+
+  if (error) {
+    console.error('[GooglePay] process-payment error:', error)
+    throw new Error(error.message || 'Google Pay payment failed')
+  }
+
+  return data
+}
+
+/**
  * Handle the full 3DS challenge flow.
  * Shows iframe, waits for ACS response, continues with G2Pay.
  * Supports recursive challenges (method URL → challenge URL).
