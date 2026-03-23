@@ -15,10 +15,59 @@ interface ImportMeta {
 }
 
 // Apple Pay API declarations
+interface ApplePayPaymentRequest {
+  countryCode: string
+  currencyCode: string
+  supportedNetworks: string[]
+  merchantCapabilities: string[]
+  total: {
+    label: string
+    amount: string
+    type: string
+  }
+}
+
+interface ApplePayPaymentToken {
+  paymentData: string
+}
+
+interface ApplePayPayment {
+  token: ApplePayPaymentToken
+}
+
+interface ApplePayValidateMerchantEvent {
+  validationURL: string
+}
+
+interface ApplePayPaymentAuthorizedEvent {
+  payment: ApplePayPayment
+}
+
+interface ApplePaySession {
+  onvalidatemerchant: ((event: ApplePayValidateMerchantEvent) => void) | null
+  onpaymentauthorized: ((event: ApplePayPaymentAuthorizedEvent) => void) | null
+  oncancel: (() => void) | null
+  completeMerchantValidation(merchantSession: unknown): void
+  completePayment(result: { status: number }): void
+  abort(): void
+  begin(): void
+}
+
+interface ApplePaySessionConstructor {
+  new (version: number, paymentRequest: ApplePayPaymentRequest): ApplePaySession
+  canMakePayments(): boolean
+  STATUS_SUCCESS: number
+  STATUS_FAILURE: number
+}
+
 interface Window {
-  ApplePaySession?: {
-    canMakePayments(): boolean
-    new (version: number, paymentRequest: unknown): unknown
+  ApplePaySession?: ApplePaySessionConstructor
+  google?: {
+    payments: {
+      api: {
+        PaymentsClient: new (config: { environment: string }) => any
+      }
+    }
   }
   PaymentRequest?: {
     new (

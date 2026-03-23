@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Header from '@/components/common/Header'
 import Footer from '@/components/common/Footer'
@@ -25,20 +25,6 @@ import {
   TermsCheckboxes,
   CardPayment,
 } from './components'
-
-// Google Pay types
-declare global {
-  interface Window {
-    ApplePaySession?: any
-    google?: {
-      payments: {
-        api: {
-          PaymentsClient: new (config: { environment: string }) => any
-        }
-      }
-    }
-  }
-}
 
 // Google Pay client stored outside React state to avoid DataCloneError with postMessage
 let googlePayClientInstance: any = null
@@ -663,7 +649,7 @@ function Checkout() {
 
     setPaymentError(null)
 
-    let createdOrderId: string | null = null
+    const ApplePaySessionClass = window.ApplePaySession
 
     const paymentRequest = {
       countryCode: 'GB',
@@ -677,7 +663,7 @@ function Checkout() {
       },
     }
 
-    const session = new window.ApplePaySession(3, paymentRequest)
+    const session = new ApplePaySessionClass(3, paymentRequest)
 
     session.onvalidatemerchant = async (event: any) => {
       try {
@@ -700,7 +686,6 @@ function Checkout() {
 
         // Create order after user authorises — prevents orphan orders on cancel
         const { order, session: authSession } = await createOrderForPayment()
-        createdOrderId = order.id
 
         const paymentToken = event.payment.token.paymentData
 
@@ -712,25 +697,25 @@ function Checkout() {
         )
 
         if (!paymentResult.success) {
-          session.completePayment({ status: window.ApplePaySession.STATUS_FAILURE })
+          session.completePayment({ status: ApplePaySessionClass.STATUS_FAILURE })
           throw new Error(paymentResult.error || 'Apple Pay payment failed')
         }
 
         // Complete order — marks as paid + claims tickets
         const completeResult = await completeOrder(order.id)
         if (!completeResult.success) {
-          session.completePayment({ status: window.ApplePaySession.STATUS_FAILURE })
+          session.completePayment({ status: ApplePaySessionClass.STATUS_FAILURE })
           throw new Error(completeResult.error || 'Failed to complete order')
         }
 
-        session.completePayment({ status: window.ApplePaySession.STATUS_SUCCESS })
+        session.completePayment({ status: ApplePaySessionClass.STATUS_SUCCESS })
 
         setPurchaseCompleted(true)
         clearCart()
         navigate('/account?tab=tickets&purchase=success')
       } catch (err: any) {
         console.error('[ApplePay] Payment failed:', err)
-        session.completePayment({ status: window.ApplePaySession.STATUS_FAILURE })
+        session.completePayment({ status: ApplePaySessionClass.STATUS_FAILURE })
         setPaymentError(err.message || 'Apple Pay payment failed')
         showErrorToast(err.message || 'Apple Pay payment failed')
       } finally {
